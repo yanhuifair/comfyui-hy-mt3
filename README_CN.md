@@ -6,6 +6,8 @@
 
 [English README](README.md)
 
+![示例工作流：Hy-MT3 模型加载器 → 翻译节点 → Save Text](docs/workflow.png)
+
 ## 节点
 
 | 节点 | 作用 |

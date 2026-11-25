@@ -6,6 +6,8 @@ ComfyUI nodes for Tencent's **Hy-MT3** translation models in GGUF format: 1.8B, 
 
 [中文说明](README_CN.md)
 
+![Example workflow: Hy-MT3 Model Loader → Hy-MT3 Translate → Save Text](docs/workflow.png)
+
 ## Nodes
 
 | Node | Purpose |
