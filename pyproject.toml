@@ -1,0 +1,11 @@
+[project]
+name = "comfyui-hy-mt3"
+description = "ComfyUI loader and translation nodes for Tencent Hy-MT3 GGUF models (1.8B / 7B / 30B-A3B)"
+version = "1.0.0"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.10"
+
+[tool.comfy]
+PublisherId = "fair"
+DisplayName = "ComfyUI Hy-MT3"
+Icon = ""
