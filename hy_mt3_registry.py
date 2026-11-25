@@ -1,9 +1,9 @@
 """Model registry and language table for the Hy-MT3 ComfyUI nodes.
 
-Filenames were taken verbatim from the Hugging Face repositories:
-  https://huggingface.co/tencent/Hy-MT3-1.8B-GGUF
-  https://huggingface.co/tencent/Hy-MT3-7B-GGUF
-  https://huggingface.co/tencent/Hy-MT3-30B-A3B-GGUF
+The three official full-weight (BF16 safetensors) repositories:
+  https://huggingface.co/tencent/Hy-MT3-1.8B
+  https://huggingface.co/tencent/Hy-MT3-7B
+  https://huggingface.co/tencent/Hy-MT3-30B-A3B
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ HF_BASE_URL = "https://huggingface.co"
 class ModelSpec:
     repo_id: str
     size: str
-    source_lang: str
-    filenames: tuple[tuple[str, str], ...]  # (filename, quantization)
+    architecture: str
+    params_b: float
     temperature: float
     top_p: float
     top_k: int
@@ -30,41 +30,30 @@ class ModelSpec:
 # 30B-A3B:     temp 0.7, top_p 1.0, top_k -1,  repetition_penalty 1.0
 MODEL_SPECS: tuple[ModelSpec, ...] = (
     ModelSpec(
-        repo_id="tencent/Hy-MT3-1.8B-GGUF",
+        repo_id="tencent/Hy-MT3-1.8B",
         size="1.8B",
-        source_lang="zh",
-        filenames=(
-            ("Hy-MT3-1.8B-Q4_K_M.gguf", "Q4_K_M"),
-            ("Hy-MT3-1.8B-Q8_0.gguf", "Q8_0"),
-        ),
+        architecture="HunYuanDenseV1ForCausalLM",
+        params_b=1.79,
         temperature=0.7,
         top_p=0.6,
         top_k=20,
         repeat_penalty=1.05,
     ),
     ModelSpec(
-        repo_id="tencent/Hy-MT3-7B-GGUF",
+        repo_id="tencent/Hy-MT3-7B",
         size="7B",
-        source_lang="zh",
-        filenames=(
-            ("Hy-MT3-7B-IQ2.gguf", "IQ2"),
-            ("Hy-MT3-7B-Q4_K_M.gguf", "Q4_K_M"),
-            ("Hy-MT3-7B-Q8_0.gguf", "Q8_0"),
-        ),
+        architecture="HunYuanDenseV1ForCausalLM",
+        params_b=7.50,
         temperature=0.7,
         top_p=0.6,
         top_k=20,
         repeat_penalty=1.05,
     ),
     ModelSpec(
-        repo_id="tencent/Hy-MT3-30B-A3B-GGUF",
+        repo_id="tencent/Hy-MT3-30B-A3B",
         size="30B-A3B",
-        source_lang="zh",
-        filenames=(
-            ("Hy-MT3-30B-A3B-IQ2.gguf", "IQ2"),
-            ("Hy-MT3-30B-A3B-Q4_K_M.gguf", "Q4_K_M"),
-            ("Hy-MT3-30B-A3B-Q8_0.gguf", "Q8_0"),
-        ),
+        architecture="HYV3ForCausalLM",
+        params_b=30.06,
         temperature=0.7,
         top_p=1.0,
         top_k=-1,
@@ -72,32 +61,21 @@ MODEL_SPECS: tuple[ModelSpec, ...] = (
     ),
 )
 
-PRESET_FILENAMES: tuple[str, ...] = tuple(
-    filename for spec in MODEL_SPECS for filename, _ in spec.filenames
-)
+MODEL_CHOICES: tuple[str, ...] = tuple(spec.size for spec in MODEL_SPECS)
 
 
-def spec_for_filename(filename: str) -> ModelSpec | None:
-    """Return the model spec that owns ``filename``, or None for custom files."""
+def spec_for_size(size: str) -> ModelSpec | None:
     for spec in MODEL_SPECS:
-        if any(name == filename for name, _ in spec.filenames):
+        if spec.size == size:
             return spec
     return None
 
 
-def quantization_for_filename(filename: str) -> str:
+def spec_for_repo(repo_id: str) -> ModelSpec | None:
     for spec in MODEL_SPECS:
-        for name, quant in spec.filenames:
-            if name == filename:
-                return quant
-    return "custom"
-
-
-def download_url(filename: str) -> str | None:
-    spec = spec_for_filename(filename)
-    if spec is None:
-        return None
-    return f"{HF_BASE_URL}/{spec.repo_id}/resolve/main/{filename}?download=true"
+        if spec.repo_id == repo_id:
+            return spec
+    return None
 
 
 # 102 languages supported by Hy-MT3. Each entry:

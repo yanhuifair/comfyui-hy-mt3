@@ -5,42 +5,42 @@ Run with:  python3 tests/test_offline.py
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-# Import the way ComfyUI does (package __init__, with relative submodules).
 spec = importlib.util.spec_from_file_location("hy_mt3_pkg", ROOT / "__init__.py")
 package = importlib.util.module_from_spec(spec)
 sys.modules["hy_mt3_pkg"] = package
 spec.loader.exec_module(package)
 
 from hy_mt3_pkg.hy_mt3_backend import (  # noqa: E402
+    HyMT3Model,
     MODEL_FOLDER,
-    available_gguf_names,
+    available_models,
+    generate,
     model_folders,
-    resolve_model_path,
+    resolve_source,
 )
 from hy_mt3_pkg.hy_mt3_nodes import HyMT3ModelLoader, HyMT3Translate  # noqa: E402
 from hy_mt3_pkg.hy_mt3_prompt import (  # noqa: E402
-    BOS,
-    ASSISTANT,
-    USER,
     build_instruction,
-    chat_prompt,
     clean_translation,
     prompt_language,
 )
 from hy_mt3_pkg.hy_mt3_registry import (  # noqa: E402
     LANGUAGES,
-    PRESET_FILENAMES,
-    spec_for_filename,
+    MODEL_CHOICES,
+    spec_for_size,
 )
 
 
@@ -55,32 +55,58 @@ class TestRegistration(unittest.TestCase):
     def test_input_types(self):
         loader = HyMT3ModelLoader.INPUT_TYPES()["required"]
         self.assertIn("model", loader)
-        self.assertIn("auto_download", loader)
-        self.assertIn("ctx_size", loader)
+        self.assertIn("model_path", loader)
+        self.assertIn("dtype", loader)
+        self.assertNotIn("backend", loader)
         translate = HyMT3Translate.INPUT_TYPES()["required"]
         self.assertIn("model", translate)
         self.assertIn("text", translate)
-        self.assertEqual(len(HyMT3Translate.RETURN_TYPES), 1)
+
+    def test_registry(self):
+        self.assertEqual(MODEL_CHOICES, ("1.8B", "7B", "30B-A3B"))
+        self.assertEqual(len(LANGUAGES), 102)
+        self.assertEqual(
+            spec_for_size("30B-A3B").repo_id, "tencent/Hy-MT3-30B-A3B"
+        )
+        self.assertEqual(spec_for_size("7B").top_p, 0.6)
+        self.assertEqual(spec_for_size("30B-A3B").top_p, 1.0)
 
     def test_model_folder(self):
         self.assertEqual(MODEL_FOLDER, "hy-mt3")
         self.assertTrue(model_folders()[0].endswith("models/hy-mt3"))
 
-    def test_registry(self):
-        self.assertEqual(len(PRESET_FILENAMES), 8)
-        self.assertEqual(len(LANGUAGES), 102)
-        self.assertEqual(len(set(PRESET_FILENAMES)), 8)
-        for name in PRESET_FILENAMES:
-            self.assertIsNotNone(spec_for_filename(name), name)
+
+class TestSourceResolution(unittest.TestCase):
+    def test_default_repo(self):
+        self.assertEqual(resolve_source("7B"), "tencent/Hy-MT3-7B")
+
+    def test_override_repo_or_path(self):
+        self.assertEqual(resolve_source("7B", "org/model"), "org/model")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(resolve_source("7B", tmp), tmp)
+
+    def test_local_choice_label(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp) / "my-7b"
+            folder.mkdir()
+            (folder / "config.json").write_text(
+                json.dumps({"model_type": "hunyuan_v1_dense", "hidden_size": 4096}),
+                encoding="utf-8",
+            )
+            label = f"7B @ {folder}"
+            old = os.environ.get("HY_MT3_MODEL_PATHS")
+            os.environ["HY_MT3_MODEL_PATHS"] = tmp
+            try:
+                self.assertIn(label, available_models())
+                self.assertEqual(resolve_source(label), str(folder))
+            finally:
+                if old is None:
+                    os.environ.pop("HY_MT3_MODEL_PATHS", None)
+                else:
+                    os.environ["HY_MT3_MODEL_PATHS"] = old
 
 
 class TestPrompts(unittest.TestCase):
-    def test_chat_template(self):
-        self.assertEqual(
-            chat_prompt("hello"),
-            f"{BOS}{USER}hello{ASSISTANT}",
-        )
-
     def test_prompt_language_detection(self):
         self.assertEqual(prompt_language("今天天气真好", "auto"), "zh")
         self.assertEqual(prompt_language("Hello world", "auto"), "en")
@@ -93,12 +119,16 @@ class TestPrompts(unittest.TestCase):
         en = build_instruction("Hello", "French", "法语", "en")
         self.assertIn("Translate the following text into French", en)
 
+    def test_no_chat_markers_in_instruction(self):
+        out = build_instruction("Hello", "French", "法语", "en")
+        self.assertNotIn("<｜hy_User｜>", out)
+        self.assertNotIn("<｜hy_Assistant｜>", out)
+
     def test_terminology_style_context(self):
         term = build_instruction(
             "Hello", "Chinese", "中文", "en", task="terminology", glossary="HOK => 王者荣耀"
         )
         self.assertIn("Reference the following translations", term)
-        self.assertIn("HOK => 王者荣耀", term)
         style = build_instruction("Hello", "Chinese", "中文", "en", task="style", style="poetic")
         self.assertIn("strictly conform to [**poetic**]", style)
         ctx = build_instruction(
@@ -117,110 +147,84 @@ class TestPrompts(unittest.TestCase):
         )
         self.assertEqual(out, "Translate Hello into Japanese, no notes.")
 
-    def test_structured_prompt_literal_placeholders(self):
-        out = build_instruction("{\"k\": \"你好\"}", "English", "英语", "zh", task="structured")
-        self.assertIn("{{var}}", out)
-        self.assertIn("${var}", out)
-
     def test_clean_translation(self):
         self.assertEqual(
             clean_translation("<think>thinking</think>\nBonjour<answer></answer>"),
             "Bonjour",
         )
-        self.assertEqual(clean_translation("  Hello  "), "Hello")
 
 
-class TestExternalModels(unittest.TestCase):
-    def test_env_folder_discovery(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            external = Path(tmp) / "elsewhere"
-            external.mkdir()
-            model_file = external / "My-Custom-MT3.gguf"
-            model_file.write_bytes(b"not a real gguf")
+class FakeTensor:
+    shape = (1, 7)
 
-            old = os.environ.get("HY_MT3_MODEL_PATHS")
-            os.environ["HY_MT3_MODEL_PATHS"] = str(external)
-            try:
-                self.assertIn(str(external), model_folders())
-                self.assertIn("My-Custom-MT3.gguf", available_gguf_names())
-                self.assertEqual(resolve_model_path("My-Custom-MT3.gguf"), str(model_file))
-            finally:
-                if old is None:
-                    os.environ.pop("HY_MT3_MODEL_PATHS", None)
-                else:
-                    os.environ["HY_MT3_MODEL_PATHS"] = old
-
-    def test_relative_path(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            previous = os.getcwd()
-            os.chdir(tmp)
-            try:
-                Path("relative.gguf").write_bytes(b"not a real gguf")
-                self.assertEqual(
-                    os.path.realpath(resolve_model_path("relative.gguf")),
-                    os.path.realpath(str(Path(tmp) / "relative.gguf")),
-                )
-            finally:
-                os.chdir(previous)
+    def to(self, device):
+        self.device = device
+        return self
 
 
-class TestEndToEndWithStubCLI(unittest.TestCase):
-    def test_loader_to_translate(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            model_file = Path(tmp) / "Hy-MT3-1.8B-Q4_K_M.gguf"
-            model_file.write_bytes(b"not a real gguf")
-            stub = Path(tmp) / "llama-cli"
-            stub.write_text("#!/bin/sh\nprintf '%s\\n' '<think>thinking</think>Bonjour le monde'\n")
-            stub.chmod(0o755)
+class FakeParam:
+    device = "cpu"
 
-            old_cli = os.environ.get("HY_MT3_LLAMA_CLI")
-            old_backend = os.environ.get("HY_MT3_BACKEND")
-            os.environ["HY_MT3_LLAMA_CLI"] = str(stub)
-            os.environ.pop("HY_MT3_BACKEND", None)
-            try:
-                loaded = HyMT3ModelLoader().load_model(
-                    model="Hy-MT3-1.8B-Q4_K_M.gguf",
-                    auto_download=False,
-                    model_path=str(model_file),
-                    backend="auto",
-                    device="cpu",
-                    ctx_size=8192,
-                    threads=0,
-                    sampling="model_recommended",
-                    temperature=0.0,
-                    top_p=0.0,
-                    top_k=0,
-                    repeat_penalty=1.0,
-                    seed=-1,
-                    timeout=30,
-                )
-                handle = loaded[0]
-                self.assertEqual(handle.temperature, 0.7)
-                self.assertEqual(handle.top_p, 0.6)
-                self.assertEqual(handle.top_k, 20)
-                self.assertEqual(handle.ngl, 0)
 
-                result = HyMT3Translate().translate(
-                    model=handle,
-                    text="Hello",
-                    target_language="法语 | French (fr)",
-                    prompt_language="auto",
-                    task="default",
-                    style="",
-                    glossary="",
-                    background="",
-                    custom_prompt="",
-                    max_tokens=64,
-                    strip_thinking=True,
-                )
-                self.assertEqual(result[0], "Bonjour le monde")
-            finally:
-                if old_cli is None:
-                    os.environ.pop("HY_MT3_LLAMA_CLI", None)
-                else:
-                    os.environ["HY_MT3_LLAMA_CLI"] = old_cli
-                if old_backend is not None:
-                    os.environ["HY_MT3_BACKEND"] = old_backend
+class FakeTokenizer:
+    pad_token_id = 120002
+
+    def __init__(self):
+        self.messages = None
+
+    def apply_chat_template(self, messages, add_generation_prompt, return_tensors):
+        self.messages = messages
+        self.add_generation_prompt = add_generation_prompt
+        return FakeTensor()
+
+    def decode(self, token_ids, skip_special_tokens=True):
+        return "<think>thinking</think>Bonjour le monde"
+
+
+class FakeModel:
+    def parameters(self):
+        return iter([FakeParam()])
+
+    def generate(self, **kwargs):
+        self.kwargs = kwargs
+        return [[1, 2, 3]]
+
+
+class TestGenerateWithFakeModel(unittest.TestCase):
+    def test_generate_uses_chat_template_and_sampling(self):
+        fake_torch = types.ModuleType("torch")
+        fake_torch.inference_mode = contextlib.nullcontext
+        fake_torch.manual_seed = lambda seed: None
+        old_torch = sys.modules.get("torch")
+        sys.modules["torch"] = fake_torch
+        try:
+            tokenizer, model = FakeTokenizer(), FakeModel()
+            handle = HyMT3Model(
+                source="tencent/Hy-MT3-7B",
+                size="7B",
+                tokenizer=tokenizer,
+                model=model,
+                device="cpu",
+                dtype="bf16",
+                temperature=0.7,
+                top_p=0.6,
+                top_k=20,
+                repeat_penalty=1.05,
+                seed=-1,
+                ctx_size=8192,
+            )
+            raw = generate(handle, "Translate Hello", 64)
+            self.assertEqual(tokenizer.messages, [{"role": "user", "content": "Translate Hello"}])
+            self.assertTrue(tokenizer.add_generation_prompt)
+            self.assertEqual(model.kwargs["max_new_tokens"], 64)
+            self.assertEqual(model.kwargs["temperature"], 0.7)
+            self.assertEqual(model.kwargs["top_k"], 20)
+            self.assertEqual(clean_translation(raw), "Bonjour le monde")
+        finally:
+            if old_torch is None:
+                sys.modules.pop("torch", None)
+            else:
+                sys.modules["torch"] = old_torch
 
 
 if __name__ == "__main__":

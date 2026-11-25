@@ -1,40 +1,31 @@
-"""GGUF download, backend discovery and text generation for Hy-MT3.
+"""Full-weight Hy-MT3 inference with Hugging Face Transformers.
 
-Two inference backends are supported:
-
-1. ``llama-cli`` from llama.cpp (preferred: newest architectures such as hy_v3
-   are supported as soon as llama.cpp supports them). Install with
-   ``brew install llama.cpp`` or https://github.com/ggml-org/llama.cpp
-2. ``llama-cpp-python`` (optional in-process fallback): ``pip install llama-cpp-python``
-
-Set ``HY_MT3_BACKEND=cli|python`` to force one, or ``HY_MT3_LLAMA_CLI`` to
-point at a non-PATH llama-cli executable.
+The three official base repositories are loaded directly (BF16 safetensors),
+following the code examples in their model cards. No GGUF or llama.cpp is
+needed. Chat formatting is delegated to ``tokenizer.apply_chat_template`` so
+the 7B template (different from 1.8B / 30B-A3B) is handled correctly.
 """
 
 from __future__ import annotations
 
+import json
 import os
-import shutil
-import subprocess
-import sys
-import urllib.request
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 try:  # package import (ComfyUI)
-    from .hy_mt3_prompt import chat_prompt
     from .hy_mt3_registry import (
-        PRESET_FILENAMES,
-        download_url,
-        spec_for_filename,
+        MODEL_CHOICES,
+        spec_for_repo,
+        spec_for_size,
     )
 except ImportError:  # direct module import (tests)
-    from hy_mt3_prompt import chat_prompt
     from hy_mt3_registry import (
-        PRESET_FILENAMES,
-        download_url,
-        spec_for_filename,
+        MODEL_CHOICES,
+        spec_for_repo,
+        spec_for_size,
     )
 
 try:  # ComfyUI is optional when this module is imported by the offline tests.
@@ -43,11 +34,15 @@ except ImportError:  # pragma: no cover - exercised only outside ComfyUI
     folder_paths = None
 
 MODEL_FOLDER = "hy-mt3"
-_ENGINE_CACHE: dict[tuple[Any, ...], Any] = {}
+_CACHE: dict[tuple[Any, ...], tuple[Any, Any, str]] = {}
+_CACHE_LOCK = threading.Lock()
+
+
+class MissingDependency(RuntimeError):
+    """Raised when transformers/torch is not available."""
 
 
 def default_model_folder() -> str:
-    """The canonical ComfyUI/models/hy-mt3 folder (download destination)."""
     if folder_paths is not None:
         models_dir = getattr(folder_paths, "models_dir", None)
         if models_dir:
@@ -55,37 +50,31 @@ def default_model_folder() -> str:
     return os.path.join(os.path.expanduser("~"), "ComfyUI", "models", MODEL_FOLDER)
 
 
-def model_folders() -> list[str]:
-    """Directories searched for GGUF files, in priority order.
+def register_model_folder() -> None:
+    if folder_paths is None:
+        return
+    add_path = getattr(folder_paths, "add_model_folder_path", None)
+    if add_path is not None:
+        add_path(MODEL_FOLDER, default_model_folder())
 
-    Sources:
-      1. ComfyUI's registered ``hy-mt3`` paths (including extra_model_paths.yaml
-         entries named ``hy-mt3``).
-      2. The canonical ``ComfyUI/models/hy-mt3`` folder.
-      3. Extra directories from ``HY_MT3_MODEL_PATHS`` (os.pathsep separated).
-      4. llama.cpp's download cache and Hugging Face snapshots of the official
-         Hy-MT3 GGUF repos, so an already downloaded model is picked up too.
-    """
+
+def model_folders() -> list[str]:
+    """Directories searched for locally stored full-weight models."""
     folders: list[str] = []
     if folder_paths is not None:
         get_paths = getattr(folder_paths, "get_folder_paths", None)
         if get_paths is not None:
             try:
                 folders = list(get_paths(MODEL_FOLDER))
-            except KeyError:  # folder type not registered yet
+            except KeyError:
                 pass
     folders.append(default_model_folder())
-
     for entry in os.environ.get("HY_MT3_MODEL_PATHS", "").split(os.pathsep):
         if entry.strip():
             folders.append(os.path.abspath(os.path.expanduser(entry.strip())))
 
-    home = Path.home()
-    llama_cache = home / ".cache" / "llama.cpp"
-    if llama_cache.is_dir():
-        folders.append(str(llama_cache))
-    hub_cache = home / ".cache" / "huggingface" / "hub"
-    for snapshot in sorted(hub_cache.glob("models--tencent--Hy-MT3-*-GGUF/snapshots/*")):
+    hub = Path.home() / ".cache" / "huggingface" / "hub"
+    for snapshot in sorted(hub.glob("models--tencent--Hy-MT3-*/snapshots/*")):
         if snapshot.is_dir():
             folders.append(str(snapshot))
 
@@ -96,283 +85,218 @@ def model_folders() -> list[str]:
     return unique
 
 
-def register_model_folder() -> None:
-    if folder_paths is None:
-        return
-    add_path = getattr(folder_paths, "add_model_folder_path", None)
-    if add_path is None:
-        return
-    add_path(MODEL_FOLDER, default_model_folder())
+def _size_from_config(path: Path) -> str | None:
+    config_file = path / "config.json"
+    if not config_file.is_file():
+        return None
+    try:
+        config = json.loads(config_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    model_type = config.get("model_type")
+    if model_type == "hy_v3":
+        return "30B-A3B"
+    if model_type == "hunyuan_v1_dense":
+        return "7B" if config.get("hidden_size", 0) >= 4096 else "1.8B"
+    for size in MODEL_CHOICES:
+        if size.replace("-", "") in path.name.replace("-", ""):
+            return size
+    return None
 
 
-def local_gguf_names() -> list[str]:
-    names: list[str] = []
+def local_model_choices() -> list[str]:
+    """Return labels like ``7B @ /path/to/local/model`` for local snapshots."""
+    labels: list[str] = []
+    candidates: list[Path] = []
     for folder in model_folders():
-        if not os.path.isdir(folder):
+        base = Path(folder)
+        if not base.is_dir():
             continue
-        for path in Path(folder).glob("*.gguf"):
-            if path.name not in names:
-                names.append(path.name)
-    return names
+        candidates.append(base)
+        candidates.extend(sorted(p for p in base.iterdir() if p.is_dir()))
+    for candidate in candidates:
+        size = _size_from_config(candidate)
+        if size is None:
+            continue
+        label = f"{size} @ {candidate}"
+        if label not in labels:
+            labels.append(label)
+    return labels
 
 
-def available_gguf_names() -> list[str]:
-    names = list(PRESET_FILENAMES)
-    for name in local_gguf_names():
-        if name not in names:
-            names.append(name)
-    return names
+def available_models() -> list[str]:
+    choices = list(MODEL_CHOICES)
+    for label in local_model_choices():
+        if label not in choices:
+            choices.append(label)
+    return choices
 
 
-@dataclass(frozen=True)
+def resolve_source(choice: str, model_path: str = "") -> str:
+    """Resolve the loader selection to a HF repo id or a local directory."""
+    override = model_path.strip()
+    if override:
+        expanded = os.path.expanduser(override)
+        return os.path.abspath(expanded) if os.path.isdir(expanded) else override
+    if " @ " in choice:
+        return choice.split(" @ ", 1)[1]
+    spec = spec_for_size(choice)
+    if spec is None:
+        raise ValueError(f"Unknown Hy-MT3 model: {choice}")
+    return spec.repo_id
+
+
+@dataclass
 class HyMT3Model:
-    """Serializable handle passed from the loader node to the translate node."""
+    """Handle passed from the loader node to the translate node."""
 
-    path: str
-    name: str
+    source: str
     size: str
-    quantization: str
-    repo_id: str | None
-    ctx_size: int
-    ngl: int
-    threads: int
+    tokenizer: Any
+    model: Any
+    device: str
+    dtype: str
     temperature: float
     top_p: float
     top_k: int
     repeat_penalty: float
     seed: int
-    timeout: int
-    backend: str
+    ctx_size: int
 
     @property
     def label(self) -> str:
-        return f"Hy-MT3 {self.size} {self.quantization}"
+        return f"Hy-MT3 {self.size} ({self.dtype}, {self.device})"
 
 
-def resolve_model_path(name: str, override: str = "") -> str:
-    if override.strip():
-        return os.path.abspath(os.path.expanduser(override.strip()))
-    if os.path.isabs(name):
-        return os.path.abspath(os.path.expanduser(name))
-    if os.path.isfile(name):  # relative path from the current working directory
-        return os.path.abspath(name)
-    for folder in model_folders():
-        candidate = os.path.join(folder, name)
-        if os.path.isfile(candidate):
-            return candidate
-    return os.path.join(model_folders()[0], name)
+def _preferred_device(device: str, torch: Any) -> str:
+    if device != "auto":
+        return device
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps"
+    return "cpu"
 
 
-def _download_with_urllib(url: str, destination: str, timeout: int = 60) -> None:
-    """Stream a HF resolve URL into ``destination`` with resume support."""
-    partial = destination + ".part"
-    start = os.path.getsize(partial) if os.path.isfile(partial) else 0
-    request = urllib.request.Request(url)
-    if start:
-        request.add_header("Range", f"bytes={start}-")
-
-    os.makedirs(os.path.dirname(destination) or ".", exist_ok=True)
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        status = getattr(response, "status", 200)
-        if start and status == 200:  # server ignored Range -> restart
-            start = 0
-        total = response.headers.get("Content-Length")
-        total = int(total) + start if total else None
-        mode = "ab" if start else "wb"
-        done = start
-        last_report = -1
-        with open(partial, mode) as handle:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                handle.write(chunk)
-                done += len(chunk)
-                if total:
-                    percent = int(done * 100 / total)
-                    if percent // 10 > last_report:
-                        last_report = percent // 10
-                        print(f"[Hy-MT3] download {percent}% ({done}/{total} bytes)")
-    os.replace(partial, destination)
-
-
-def ensure_model(path: str, name: str, auto_download: bool) -> None:
-    if os.path.isfile(path):
-        return
-    if not auto_download:
-        raise FileNotFoundError(
-            f"GGUF not found: {path}\n"
-            f"Put the file in {model_folders()[0]} or enable auto_download."
-        )
-    url = download_url(name)
-    if url is None:
-        raise FileNotFoundError(
-            f"Unknown GGUF '{name}'. Pass an absolute path via model_path for custom files."
-        )
-    endpoint = os.environ.get("HF_ENDPOINT", "").rstrip("/")
-    if endpoint:
-        url = url.replace("https://huggingface.co", endpoint, 1)
-    print(f"[Hy-MT3] downloading {name} from Hugging Face ...")
+def load_model(
+    source: str,
+    dtype_name: str = "bf16",
+    device: str = "auto",
+    progress: Callable[[str], None] | None = None,
+) -> HyMT3Model:
+    """Load tokenizer + model, downloading from Hugging Face if necessary."""
     try:
-        try:
-            from huggingface_hub import hf_hub_download
-        except ImportError:
-            _download_with_urllib(url, path)
-        else:
-            spec = spec_for_filename(name)
-            downloaded = hf_hub_download(
-                repo_id=spec.repo_id,
-                filename=name,
-                local_dir=os.path.dirname(path) or ".",
-            )
-            if os.path.abspath(downloaded) != os.path.abspath(path):
-                os.replace(downloaded, path)
-    except Exception as exc:
-        raise RuntimeError(
-            f"Failed to download {name}: {exc}\n"
-            "Set HF_ENDPOINT if you use a mirror, or download the file manually into "
-            f"{model_folders()[0]}."
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError as exc:
+        raise MissingDependency(
+            "PyTorch and transformers are required: "
+            "pip install 'transformers>=5.6.0' (torch comes with ComfyUI)."
         ) from exc
-    print(f"[Hy-MT3] saved {path}")
 
+    dtype_map = {
+        "bf16": torch.bfloat16,
+        "fp16": torch.float16,
+        "fp32": torch.float32,
+    }
+    if dtype_name not in dtype_map:
+        raise ValueError(f"Unsupported dtype: {dtype_name}")
+    dtype = dtype_map[dtype_name]
 
-def find_llama_cli() -> str | None:
-    override = os.environ.get("HY_MT3_LLAMA_CLI", "").strip()
-    if override:
-        return override if os.path.isfile(override) else None
-    return shutil.which("llama-cli")
+    spec = spec_for_repo(source) or spec_for_size(source)
+    size = spec.size if spec else "custom"
 
-
-def resolve_backend(preference: str = "auto") -> str:
-    """Return 'cli' or 'python', raising a helpful error when neither works."""
-    choice = (preference or "auto").lower()
-    env_choice = os.environ.get("HY_MT3_BACKEND", "").strip().lower()
-    if env_choice in ("cli", "python"):
-        choice = env_choice
-
-    if choice == "cli":
-        if find_llama_cli() is None:
-            raise RuntimeError(
-                "llama-cli not found. Install llama.cpp (e.g. `brew install llama.cpp`) "
-                "or set HY_MT3_LLAMA_CLI to the executable path."
-            )
-        return "cli"
-    if choice == "python":
+    with _CACHE_LOCK:
+        cached = _CACHE.get((source, dtype_name, device))
+    if cached is not None:
+        tokenizer, model, actual_device = cached
+        if progress:
+            progress(f"[Hy-MT3] reuse cached {size} on {actual_device}")
+    else:
+        if progress:
+            progress(f"[Hy-MT3] loading {source} ({dtype_name}) ...")
+        tokenizer = AutoTokenizer.from_pretrained(source, trust_remote_code=True)
+        kwargs: dict[str, Any] = {"dtype": dtype, "trust_remote_code": True}
         try:
-            import llama_cpp  # noqa: F401
-        except ImportError as exc:
-            raise RuntimeError(
-                "llama-cpp-python is not installed. Run `pip install llama-cpp-python`."
-            ) from exc
-        return "python"
+            import accelerate  # noqa: F401
+        except ImportError:
+            target = _preferred_device(device, torch)
+            if progress:
+                progress(f"[Hy-MT3] accelerate not installed; loading on {target}")
+            model = AutoModelForCausalLM.from_pretrained(source, **kwargs)
+            model = model.to(target)
+            actual_device = target
+        else:
+            kwargs["device_map"] = "auto" if device == "auto" else device
+            model = AutoModelForCausalLM.from_pretrained(source, **kwargs)
+            actual_device = "auto" if device == "auto" else device
+        model.eval()
+        with _CACHE_LOCK:
+            _CACHE[(source, dtype_name, device)] = (tokenizer, model, actual_device)
 
-    if find_llama_cli() is not None:
-        return "cli"
-    try:
-        import llama_cpp  # noqa: F401
-    except ImportError:
-        raise RuntimeError(
-            "No Hy-MT3 inference backend found. Install llama.cpp "
-            "(`brew install llama.cpp`) or `pip install llama-cpp-python`."
-        )
-    return "python"
-
-
-def _cli_command(model: HyMT3Model, instruction: str, max_tokens: int) -> list[str]:
-    cli = find_llama_cli()
-    if cli is None:
-        raise RuntimeError("llama-cli not found; check HY_MT3_LLAMA_CLI.")
-    cmd = [
-        cli,
-        "-m", model.path,
-        "-p", instruction,
-        "--jinja",            # use the chat template embedded in the GGUF
-        "-st",                # single turn, then exit
-        "--no-escape",        # keep literal \n / quotes in the source text
-        "-n", str(max_tokens),
-        "-c", str(model.ctx_size),
-        "--temp", str(model.temperature),
-        "--top-p", str(model.top_p),
-        "--top-k", str(0 if model.top_k < 0 else model.top_k),
-        "--repeat-penalty", str(model.repeat_penalty),
-        "-ngl", str(model.ngl),
-    ]
-    if model.threads > 0:
-        cmd += ["-t", str(model.threads)]
-    if model.seed >= 0:
-        cmd += ["-s", str(model.seed)]
-    return cmd
-
-
-def _python_generate(model: HyMT3Model, instruction: str, max_tokens: int) -> str:
-    try:
-        from llama_cpp import Llama
-    except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("llama-cpp-python is not installed.") from exc
-
-    key = (model.path, model.ctx_size, model.ngl, model.threads)
-    engine = _ENGINE_CACHE.get(key)
-    if engine is None:
-        engine = Llama(
-            model_path=model.path,
-            n_ctx=model.ctx_size,
-            n_gpu_layers=-1 if model.ngl < 0 else model.ngl,
-            n_threads=model.threads if model.threads > 0 else None,
-            verbose=False,
-        )
-        _ENGINE_CACHE[key] = engine
-
-    result = engine.create_completion(
-        chat_prompt(instruction),
-        max_tokens=max_tokens,
-        temperature=model.temperature,
-        top_p=model.top_p,
-        top_k=max(model.top_k, 0),
-        repeat_penalty=model.repeat_penalty,
-        seed=model.seed if model.seed >= 0 else None,
+    sampling = spec or spec_for_size(size)
+    return HyMT3Model(
+        source=source,
+        size=size,
+        tokenizer=tokenizer,
+        model=model,
+        device=actual_device,
+        dtype=dtype_name,
+        temperature=sampling.temperature if sampling else 0.7,
+        top_p=sampling.top_p if sampling else 0.6,
+        top_k=sampling.top_k if sampling else 20,
+        repeat_penalty=sampling.repeat_penalty if sampling else 1.05,
+        seed=-1,
+        ctx_size=8192,
     )
-    return result["choices"][0]["text"]
 
 
 def generate(
-    model: HyMT3Model,
+    handle: HyMT3Model,
     instruction: str,
     max_tokens: int,
     progress: Callable[[str], None] | None = None,
 ) -> str:
-    """Run one translation and return the raw model output."""
-    backend = resolve_backend(model.backend)
-    if progress:
-        progress(f"[Hy-MT3] backend={backend} model={model.path}")
-
-    if backend == "python":
-        return _python_generate(model, instruction, max_tokens)
-
-    cmd = _cli_command(model, instruction, max_tokens)
-    if progress:
-        progress("[Hy-MT3] generating ...")
+    """Translate one instruction using the model's own chat template."""
     try:
-        completed = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=model.timeout,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(
-            f"llama-cli timed out after {model.timeout}s. Increase the loader's timeout "
-            "or lower max_tokens."
-        ) from exc
-    if completed.returncode != 0:
-        tail = "\n".join(completed.stderr.strip().splitlines()[-20:])
-        raise RuntimeError(f"llama-cli exited with {completed.returncode}:\n{tail}")
+        import torch
+    except ImportError as exc:  # pragma: no cover
+        raise MissingDependency("PyTorch is required.") from exc
 
-    output = completed.stdout
-    # llama-cli may print a single interactive prompt marker on stdout.
-    if output.startswith("> "):
-        output = output[2:]
-    return output.strip()
+    if handle.seed >= 0:
+        torch.manual_seed(handle.seed)
+
+    messages = [{"role": "user", "content": instruction}]
+    encoded = handle.tokenizer.apply_chat_template(
+        messages, add_generation_prompt=True, return_tensors="pt"
+    )
+    device = getattr(handle.model, "device", None)
+    if device is None:
+        device = next(handle.model.parameters()).device
+    if hasattr(encoded, "keys"):  # BatchEncoding
+        inputs = {key: value.to(device) for key, value in encoded.items()}
+        prompt_len = inputs["input_ids"].shape[-1]
+    else:  # plain tensor
+        input_ids = encoded.to(device)
+        inputs = {"input_ids": input_ids}
+        prompt_len = input_ids.shape[-1]
+
+    gen_kwargs: dict[str, Any] = {
+        "max_new_tokens": max_tokens,
+        "do_sample": True,
+        "temperature": handle.temperature,
+        "top_p": handle.top_p,
+        "repetition_penalty": handle.repeat_penalty,
+        "pad_token_id": handle.tokenizer.pad_token_id,
+    }
+    if handle.top_k > 0:
+        gen_kwargs["top_k"] = handle.top_k
+    if progress:
+        progress(f"[Hy-MT3] generating on {device} ...")
+
+    with torch.inference_mode():
+        outputs = handle.model.generate(**inputs, **gen_kwargs)
+    return handle.tokenizer.decode(
+        outputs[0][prompt_len:], skip_special_tokens=True
+    ).strip()

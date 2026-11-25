@@ -1,14 +1,11 @@
 """Prompt construction for Hy-MT3.
 
 The prompts below follow the official model card examples:
-https://huggingface.co/tencent/Hy-MT3-1.8B-GGUF#hy-mt3-translation-task-instruction-examples-chinese-english-comparison
+https://huggingface.co/tencent/Hy-MT3-1.8B#hy-mt3-translation-task-instruction-examples-chinese-english-comparison
 
-The model has no default system prompt. Its chat template is:
-
-  <｜hy_begin▁of▁sentence｜><｜hy_User｜>{message}<｜hy_Assistant｜>
-
-We pass a raw completion prompt to the llama.cpp Python binding, and let
-llama-cli apply the chat template embedded in the GGUF (--jinja).
+The model has no default system prompt. Chat markers are deliberately NOT
+added here: the backend uses ``tokenizer.apply_chat_template`` so each model
+uses its own template (7B's differs from 1.8B and 30B-A3B).
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
-"""ComfyUI nodes for Tencent Hy-MT3 GGUF translation models.
+"""ComfyUI nodes for Tencent Hy-MT3 translation models (full HF weights).
 
 Nodes:
-  - Hy-MT3 Model Loader: pick/download a GGUF and set inference options.
+  - Hy-MT3 Model Loader: load a base model and set inference options.
   - Hy-MT3 Translate: translate text using a loaded model.
 """
 

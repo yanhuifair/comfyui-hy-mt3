@@ -1,3 +1,4 @@
-# Optional. Only needed for automatic GGUF downloads with huggingface_hub;
-# the plugin falls back to urllib when this package is unavailable.
+transformers>=5.6.0
 huggingface_hub>=0.24.0
+safetensors>=0.4.0
+accelerate>=0.30.0

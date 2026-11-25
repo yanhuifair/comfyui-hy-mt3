@@ -2,7 +2,7 @@
 
 [GitHub 仓库](https://github.com/yanhuifair/comfyui-hy-mt3)
 
-面向腾讯 **Hy-MT3** GGUF 翻译模型的 ComfyUI 节点，支持 1.8B、7B、30B-A3B（MoE）三种规格，覆盖 102 种语言。
+面向腾讯 **Hy-MT3** 翻译模型的 ComfyUI 节点，直接用 Hugging Face Transformers 加载官方完整权重（BF16 safetensors）：1.8B、7B、30B-A3B（MoE），覆盖 102 种语言。
 
 [English README](README.md)
 
@@ -12,85 +12,65 @@
 
 | 节点 | 作用 |
 | --- | --- |
-| **Hy-MT3 Model Loader** | 选择或下载 GGUF，配置设备、上下文、线程与采样参数，输出 `HY_MT3_MODEL` 句柄。 |
-| **Hy-MT3 Translate** | 接收模型句柄与文本，按官方提示词模板翻译并返回译文字符串。 |
+| **Hy-MT3 Model Loader** | 从 Hugging Face 或本地目录加载模型，设置设备、精度与采样，输出 `HY_MT3_MODEL` 句柄。 |
+| **Hy-MT3 Translate** | 接收模型句柄与文本，用模型自带的 chat template 构造输入并返回译文。 |
 
 把加载器的 `HY_MT3_MODEL` 连到翻译节点；一个加载器可以驱动多个翻译节点。
 
-## 支持的权重
+## 支持的模型
 
-官方仓库与准确文件名：
+| 模型 | 仓库 | BF16 参数量 | 权重约 |
+| --- | --- | --- | --- |
+| Hy-MT3-1.8B | [tencent/Hy-MT3-1.8B](https://huggingface.co/tencent/Hy-MT3-1.8B) | 1.79B | ~3.6 GB |
+| Hy-MT3-7B | [tencent/Hy-MT3-7B](https://huggingface.co/tencent/Hy-MT3-7B) | 7.50B | ~15 GB |
+| Hy-MT3-30B-A3B | [tencent/Hy-MT3-30B-A3B](https://huggingface.co/tencent/Hy-MT3-30B-A3B) | 30.06B（MoE，128 专家，激活 8 个） | ~60 GB |
 
-| 模型 | 量化 | Hugging Face |
-| --- | --- | --- |
-| Hy-MT3-1.8B | `Q4_K_M`、`Q8_0` | [tencent/Hy-MT3-1.8B-GGUF](https://huggingface.co/tencent/Hy-MT3-1.8B-GGUF) |
-| Hy-MT3-7B | `IQ2`、`Q4_K_M`、`Q8_0` | [tencent/Hy-MT3-7B-GGUF](https://huggingface.co/tencent/Hy-MT3-7B-GGUF) |
-| Hy-MT3-30B-A3B | `IQ2`、`Q4_K_M`、`Q8_0` | [tencent/Hy-MT3-30B-A3B-GGUF](https://huggingface.co/tencent/Hy-MT3-30B-A3B-GGUF) |
-
-首次运行会自动下载所选文件（`auto_download` 开启时）。可用 `HF_ENDPOINT` 指定镜像站。
-
-## 使用放在其他位置的模型
-
-不要求一定放在 `ComfyUI/models/hy-mt3/`，以下方式都可以：
-
-- **绝对路径**：填到加载器的 `model_path` 输入，优先级高于下拉框；当前目录下存在的相对路径也可。
-- **额外目录**：设置环境变量 `HY_MT3_MODEL_PATHS`，多个目录用 `:` 分隔（Windows 用 `;`），例如 `HY_MT3_MODEL_PATHS=/Models/LLM:/Volumes/SSD/gguf`。其中的 `.gguf` 会出现在下拉框，无需复制文件。
-- **ComfyUI `extra_model_paths.yaml`**：增加 `hy-mt3` 键后重启，例如
-  ```yaml
-  mymodels:
-    base_path: /path/to/model/library
-    hy-mt3: models/hy-mt3
-  ```
-- **已有缓存**：`~/.cache/llama.cpp` 以及官方 `tencent/Hy-MT3-*-GGUF` 仓库的 Hugging Face 快照目录会自动扫描。
-
-同名文件存在于多处时，按以下顺序取第一个：ComfyUI 注册的 `hy-mt3` 路径、默认目录、`HY_MT3_MODEL_PATHS`、缓存。要强制指定某个文件请用 `model_path`。
+1.8B/7B 架构为 `HunYuanDenseV1ForCausalLM`，30B-A3B 为 `HYV3ForCausalLM`。首次使用通过 `from_pretrained` 自动下载；可用 `HF_ENDPOINT` 指定镜像。
 
 ## 安装
 
-1. 把本目录放到 `ComfyUI/custom_nodes/`（若已克隆到此处则无需移动）。
-2. 安装任一推理后端：
-   - llama.cpp 命令行（**推荐**，能第一时间支持 `hy_v3` 等新架构）：macOS 用 `brew install llama.cpp`，其它平台参考 [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) 编译。`llama-cli` 需在 `PATH` 中，或用 `HY_MT3_LLAMA_CLI=/path/to/llama-cli` 指定。
-   - 备选：`pip install llama-cpp-python`（需要 GPU 时安装带 Metal/CUDA 的构建）。
-3. 可选：`pip install -r requirements.txt`，通过 `huggingface_hub` 获得更快、可续传的下载。
-4. 重启 ComfyUI。
+1. 把本目录放到 `ComfyUI/custom_nodes/`。
+2. 安装依赖（PyTorch 已是 ComfyUI 依赖）：
+   ```bash
+   pip install -r requirements.txt
+   ```
+   官方示例要求 `transformers>=5.6.0`。`accelerate` 可选：安装后 `device=auto` 使用 `device_map="auto"`；否则按 CUDA → MPS → CPU 选择设备。
+3. 重启 ComfyUI。
 
-加载器中的后端选项：`auto`（优先 CLI，其次 Python）、`cli`、`python`；也可用 `HY_MT3_BACKEND=cli|python` 全局强制。
+**不再需要 GGUF 文件、llama.cpp 或 `llama-cpp-python`。**
+
+## 模型位置
+
+- 下拉框选 `1.8B`、`7B` 或 `30B-A3B` 即加载官方仓库。
+- 在 `model_path` 填本地模型目录（或任意 HF repo id）即可覆盖下拉框。`ComfyUI/models/hy-mt3/` 下的子目录、环境变量 `HY_MT3_MODEL_PATHS`（用 `os.pathsep` 分隔）中的目录会被自动发现，显示为 `7B @ /path/to/model`。
+- `~/.cache/huggingface/hub/models--tencent--Hy-MT3-*/snapshots/*` 的现有缓存也会扫描。
 
 ## 加载器参数
 
-- `model`：预设文件名，或在任意已配置模型目录中找到的 `.gguf`。
-- `device`：`auto`（由 llama.cpp 决定）、`gpu`（全部层卸载到显卡）、`cpu`。
-- `ctx_size`：默认 `8192`，与官方设置一致；范围 512–262144。
-- `threads`：0 表示自动。
-- `sampling`：`model_recommended` 使用官方推荐值：
+- `device`：`auto`、`cuda`、`mps` 或 `cpu`。
+- `dtype`：`bf16`（推荐，与模型卡一致）、`fp16`、`fp32`。
+- `sampling`：`model_recommended` 使用官方参数：
   - 1.8B / 7B：温度 `0.7`、top_p `0.6`、top_k `20`、重复惩罚 `1.05`
-  - 30B-A3B：温度 `0.7`、top_p `1.0`、top_k `-1`（关闭）、重复惩罚 `1.0`
-  - 选 `custom` 时使用节点上暴露的四个数值输入。
-- `seed`：-1 表示随机；`timeout`：单次调用超时秒数，默认 600。
+  - 30B-A3B：温度 `0.7`、top_p `1.0`、关闭 top_k、重复惩罚 `1.0`
+  - `custom` 使用节点上的四个数值输入。
+- `seed`：-1 表示随机。
 
 ## 翻译节点参数
 
 - `text`：待翻译文本，支持多行与结构化文本。
-- `target_language`：102 种语言，显示为 `中文 | Chinese (zh)`。节点会按模型要求传入完整的中文或英文语言名；`prompt_language` 控制提示词语言（`auto` 根据源文是否含中文字符判断）。
-- `task`：
-  - `default` — 直接翻译，只输出结果。
-  - `terminology` — 在 `glossary` 中逐行写 `A 翻译成 B` / `A translates to B` 作为术语参考。
-  - `style` — 用 `style` 约束译文风格。
-  - `context` — 把 `background` 作为背景信息传入。
-  - `structured` — 保持格式、缩进与占位符不变。
-  - `custom` — 使用 `custom_prompt`，支持 `{text}` / `{source_text}` 与 `{target_lang}` 占位符。
+- `target_language`：102 种语言，显示为 `中文 | Chinese (zh)`。节点按模型要求传入完整的中文或英文语言名；`prompt_language` 控制提示词语言（`auto` 根据源文是否含中文字符判断）。
+- `task`：`default`、`terminology`（`glossary` 术语对照）、`style`（用 `style` 约束风格）、`context`（使用 `background`）、`structured`（保持格式与占位符）、`custom`（`custom_prompt`，支持 `{text}` / `{source_text}` 与 `{target_lang}`）。
 - `max_tokens`：默认 1024。
-- `strip_thinking`：去掉输出中的 `<think>…</think>` 片段与聊天标记。
+- `strip_thinking`：去掉 `<think>…</think>` 片段与聊天标记。
 
-提示词遵循[官方任务示例](https://huggingface.co/tencent/Hy-MT3-1.8B-GGUF#hy-mt3-translation-task-instruction-examples-chinese-english-comparison)，CLI 后端使用 GGUF 内置的 chat template；该模型没有默认 system prompt。
+输入格式化使用 `tokenizer.apply_chat_template(messages, add_generation_prompt=True)`，因此 7B 与 1.8B/30B-A3B 不同的模板由各自 tokenizer 正确处理。生成过程照官方示例：`max_new_tokens`、`do_sample=True`、官方采样参数，并只解码新生成的 token。
 
 ## 常见问题
 
-- **`llama-cli not found`**：安装 llama.cpp，或设置 `HY_MT3_LLAMA_CLI`。
-- **`No Hy-MT3 inference backend found`**：按上文安装任一后端。
-- **下载失败**：检查网络/代理，设置 `HF_ENDPOINT`，或手动把准确文件名下载到 `models/hy-mt3/`。
-- **显存不足**：改用更小量化（`IQ2`/`Q4_K_M`）、减小 `ctx_size`，或选择 `device=cpu`。
-- **30B MoE 速度慢**：用 `Q4_K_M`、`device=gpu`；无 GPU 时可适当提高 `threads`。
+- **显存/内存不足**：换更小的模型、`dtype=fp16`、`device=cpu`，或减小 `max_tokens`。
+- **30B-A3B 慢**：用 `device=cuda`/`mps` 并安装 `accelerate` 以启用 `device_map=auto`。
+- **下载失败**：设置 `HF_ENDPOINT`，或提前下载模型目录并通过 `model_path` 指定。
+- **输出含 `<think>`**：保持 `strip_thinking` 开启。
 
 <!-- 赞赏码：把图片放到 docs/wechat-pay.png，然后取消下面这行注释
 ![微信赞赏](docs/wechat-pay.png)
