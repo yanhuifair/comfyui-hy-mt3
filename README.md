@@ -25,7 +25,7 @@ Official repositories and exact filenames:
 | Hy-MT3-7B | `IQ2`, `Q4_K_M`, `Q8_0` | [tencent/Hy-MT3-7B-GGUF](https://huggingface.co/tencent/Hy-MT3-7B-GGUF) |
 | Hy-MT3-30B-A3B | `IQ2`, `Q4_K_M`, `Q8_0` | [tencent/Hy-MT3-30B-A3B-GGUF](https://huggingface.co/tencent/Hy-MT3-30B-A3B-GGUF) |
 
-The loader downloads the selected file automatically on first use (`auto_download` on). You can also place any `.gguf` under `ComfyUI/models/hy_mt3/` and select it in the dropdown, or pass an absolute path in `model_path`. Set `HF_ENDPOINT` to use a Hugging Face mirror.
+The loader downloads the selected file automatically on first use (`auto_download` on). You can also place any `.gguf` under `ComfyUI/models/hy-mt3/` and select it in the dropdown, or pass an absolute path in `model_path`. Set `HF_ENDPOINT` to use a Hugging Face mirror.
 
 ## Installation
 
@@ -40,7 +40,7 @@ Backend selection in the loader: `auto` (CLI first, then Python), `cli`, or `pyt
 
 ## Loader options
 
-- `model`: preset filename or a local `.gguf` discovered in `models/hy_mt3/`.
+- `model`: preset filename or a local `.gguf` discovered in `models/hy-mt3/`.
 - `device`: `auto` (llama.cpp decides), `gpu` (offload all layers), `cpu`.
 - `ctx_size`: default `8192`, the official context setting; range 512–262144.
 - `threads`: 0 = automatic.
@@ -70,7 +70,7 @@ The prompt follows the [official task examples](https://huggingface.co/tencent/H
 
 - **`llama-cli not found`** — install llama.cpp or set `HY_MT3_LLAMA_CLI`.
 - **`No Hy-MT3 inference backend found`** — install either backend as described above.
-- **Download fails** — check network/proxy, set `HF_ENDPOINT`, or download the exact filename manually into `models/hy_mt3/`.
+- **Download fails** — check network/proxy, set `HF_ENDPOINT`, or download the exact filename manually into `models/hy-mt3/`.
 - **Out of memory** — use a smaller quantization (`IQ2`/`Q4_K_M`), reduce `ctx_size`, or set `device=cpu`.
 - **MoE 30B is slow** — use `Q4_K_M`, set `device=gpu`, and raise `threads` for prompt processing if no GPU is available.
 

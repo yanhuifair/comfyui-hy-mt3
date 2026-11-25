@@ -25,7 +25,7 @@
 | Hy-MT3-7B | `IQ2`、`Q4_K_M`、`Q8_0` | [tencent/Hy-MT3-7B-GGUF](https://huggingface.co/tencent/Hy-MT3-7B-GGUF) |
 | Hy-MT3-30B-A3B | `IQ2`、`Q4_K_M`、`Q8_0` | [tencent/Hy-MT3-30B-A3B-GGUF](https://huggingface.co/tencent/Hy-MT3-30B-A3B-GGUF) |
 
-首次运行会自动下载所选文件（`auto_download` 开启时）。也可以把任意 `.gguf` 放到 `ComfyUI/models/hy_mt3/` 后在下拉框中选择，或在 `model_path` 填绝对路径。可用 `HF_ENDPOINT` 指定镜像站。
+首次运行会自动下载所选文件（`auto_download` 开启时）。也可以把任意 `.gguf` 放到 `ComfyUI/models/hy-mt3/` 后在下拉框中选择，或在 `model_path` 填绝对路径。可用 `HF_ENDPOINT` 指定镜像站。
 
 ## 安装
 
@@ -40,7 +40,7 @@
 
 ## 加载器参数
 
-- `model`：预设文件名，或在 `models/hy_mt3/` 中发现的本地 `.gguf`。
+- `model`：预设文件名，或在 `models/hy-mt3/` 中发现的本地 `.gguf`。
 - `device`：`auto`（由 llama.cpp 决定）、`gpu`（全部层卸载到显卡）、`cpu`。
 - `ctx_size`：默认 `8192`，与官方设置一致；范围 512–262144。
 - `threads`：0 表示自动。
@@ -70,7 +70,7 @@
 
 - **`llama-cli not found`**：安装 llama.cpp，或设置 `HY_MT3_LLAMA_CLI`。
 - **`No Hy-MT3 inference backend found`**：按上文安装任一后端。
-- **下载失败**：检查网络/代理，设置 `HF_ENDPOINT`，或手动把准确文件名下载到 `models/hy_mt3/`。
+- **下载失败**：检查网络/代理，设置 `HF_ENDPOINT`，或手动把准确文件名下载到 `models/hy-mt3/`。
 - **显存不足**：改用更小量化（`IQ2`/`Q4_K_M`）、减小 `ctx_size`，或选择 `device=cpu`。
 - **30B MoE 速度慢**：用 `Q4_K_M`、`device=gpu`；无 GPU 时可适当提高 `threads`。
 

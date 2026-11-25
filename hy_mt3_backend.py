@@ -42,7 +42,7 @@ try:  # ComfyUI is optional when this module is imported by the offline tests.
 except ImportError:  # pragma: no cover - exercised only outside ComfyUI
     folder_paths = None
 
-MODEL_FOLDER = "hy_mt3"
+MODEL_FOLDER = "hy-mt3"
 _ENGINE_CACHE: dict[tuple[Any, ...], Any] = {}
 
 

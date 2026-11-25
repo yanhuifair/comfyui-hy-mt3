@@ -21,6 +21,7 @@ package = importlib.util.module_from_spec(spec)
 sys.modules["hy_mt3_pkg"] = package
 spec.loader.exec_module(package)
 
+from hy_mt3_pkg.hy_mt3_backend import MODEL_FOLDER, model_folders  # noqa: E402
 from hy_mt3_pkg.hy_mt3_nodes import HyMT3ModelLoader, HyMT3Translate  # noqa: E402
 from hy_mt3_pkg.hy_mt3_prompt import (  # noqa: E402
     BOS,
@@ -55,6 +56,10 @@ class TestRegistration(unittest.TestCase):
         self.assertIn("model", translate)
         self.assertIn("text", translate)
         self.assertEqual(len(HyMT3Translate.RETURN_TYPES), 1)
+
+    def test_model_folder(self):
+        self.assertEqual(MODEL_FOLDER, "hy-mt3")
+        self.assertTrue(model_folders()[0].endswith("models/hy-mt3"))
 
     def test_registry(self):
         self.assertEqual(len(PRESET_FILENAMES), 8)
