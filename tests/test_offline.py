@@ -21,7 +21,12 @@ package = importlib.util.module_from_spec(spec)
 sys.modules["hy_mt3_pkg"] = package
 spec.loader.exec_module(package)
 
-from hy_mt3_pkg.hy_mt3_backend import MODEL_FOLDER, model_folders  # noqa: E402
+from hy_mt3_pkg.hy_mt3_backend import (  # noqa: E402
+    MODEL_FOLDER,
+    available_gguf_names,
+    model_folders,
+    resolve_model_path,
+)
 from hy_mt3_pkg.hy_mt3_nodes import HyMT3ModelLoader, HyMT3Translate  # noqa: E402
 from hy_mt3_pkg.hy_mt3_prompt import (  # noqa: E402
     BOS,
@@ -123,6 +128,40 @@ class TestPrompts(unittest.TestCase):
             "Bonjour",
         )
         self.assertEqual(clean_translation("  Hello  "), "Hello")
+
+
+class TestExternalModels(unittest.TestCase):
+    def test_env_folder_discovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            external = Path(tmp) / "elsewhere"
+            external.mkdir()
+            model_file = external / "My-Custom-MT3.gguf"
+            model_file.write_bytes(b"not a real gguf")
+
+            old = os.environ.get("HY_MT3_MODEL_PATHS")
+            os.environ["HY_MT3_MODEL_PATHS"] = str(external)
+            try:
+                self.assertIn(str(external), model_folders())
+                self.assertIn("My-Custom-MT3.gguf", available_gguf_names())
+                self.assertEqual(resolve_model_path("My-Custom-MT3.gguf"), str(model_file))
+            finally:
+                if old is None:
+                    os.environ.pop("HY_MT3_MODEL_PATHS", None)
+                else:
+                    os.environ["HY_MT3_MODEL_PATHS"] = old
+
+    def test_relative_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous = os.getcwd()
+            os.chdir(tmp)
+            try:
+                Path("relative.gguf").write_bytes(b"not a real gguf")
+                self.assertEqual(
+                    os.path.realpath(resolve_model_path("relative.gguf")),
+                    os.path.realpath(str(Path(tmp) / "relative.gguf")),
+                )
+            finally:
+                os.chdir(previous)
 
 
 class TestEndToEndWithStubCLI(unittest.TestCase):

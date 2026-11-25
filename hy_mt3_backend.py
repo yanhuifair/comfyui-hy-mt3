@@ -46,8 +46,26 @@ MODEL_FOLDER = "hy-mt3"
 _ENGINE_CACHE: dict[tuple[Any, ...], Any] = {}
 
 
+def default_model_folder() -> str:
+    """The canonical ComfyUI/models/hy-mt3 folder (download destination)."""
+    if folder_paths is not None:
+        models_dir = getattr(folder_paths, "models_dir", None)
+        if models_dir:
+            return os.path.join(models_dir, MODEL_FOLDER)
+    return os.path.join(os.path.expanduser("~"), "ComfyUI", "models", MODEL_FOLDER)
+
+
 def model_folders() -> list[str]:
-    """Directories searched for GGUF files, in priority order."""
+    """Directories searched for GGUF files, in priority order.
+
+    Sources:
+      1. ComfyUI's registered ``hy-mt3`` paths (including extra_model_paths.yaml
+         entries named ``hy-mt3``).
+      2. The canonical ``ComfyUI/models/hy-mt3`` folder.
+      3. Extra directories from ``HY_MT3_MODEL_PATHS`` (os.pathsep separated).
+      4. llama.cpp's download cache and Hugging Face snapshots of the official
+         Hy-MT3 GGUF repos, so an already downloaded model is picked up too.
+    """
     folders: list[str] = []
     if folder_paths is not None:
         get_paths = getattr(folder_paths, "get_folder_paths", None)
@@ -55,13 +73,27 @@ def model_folders() -> list[str]:
             try:
                 folders = list(get_paths(MODEL_FOLDER))
             except KeyError:  # folder type not registered yet
-                folders = []
-        models_dir = getattr(folder_paths, "models_dir", None)
-        if models_dir and os.path.join(models_dir, MODEL_FOLDER) not in folders:
-            folders.append(os.path.join(models_dir, MODEL_FOLDER))
-    if not folders:
-        folders = [os.path.join(os.path.expanduser("~"), "ComfyUI", "models", MODEL_FOLDER)]
-    return folders
+                pass
+    folders.append(default_model_folder())
+
+    for entry in os.environ.get("HY_MT3_MODEL_PATHS", "").split(os.pathsep):
+        if entry.strip():
+            folders.append(os.path.abspath(os.path.expanduser(entry.strip())))
+
+    home = Path.home()
+    llama_cache = home / ".cache" / "llama.cpp"
+    if llama_cache.is_dir():
+        folders.append(str(llama_cache))
+    hub_cache = home / ".cache" / "huggingface" / "hub"
+    for snapshot in sorted(hub_cache.glob("models--tencent--Hy-MT3-*-GGUF/snapshots/*")):
+        if snapshot.is_dir():
+            folders.append(str(snapshot))
+
+    unique: list[str] = []
+    for folder in folders:
+        if folder not in unique:
+            unique.append(folder)
+    return unique
 
 
 def register_model_folder() -> None:
@@ -70,8 +102,7 @@ def register_model_folder() -> None:
     add_path = getattr(folder_paths, "add_model_folder_path", None)
     if add_path is None:
         return
-    for path in model_folders():
-        add_path(MODEL_FOLDER, path)
+    add_path(MODEL_FOLDER, default_model_folder())
 
 
 def local_gguf_names() -> list[str]:
@@ -123,6 +154,8 @@ def resolve_model_path(name: str, override: str = "") -> str:
         return os.path.abspath(os.path.expanduser(override.strip()))
     if os.path.isabs(name):
         return os.path.abspath(os.path.expanduser(name))
+    if os.path.isfile(name):  # relative path from the current working directory
+        return os.path.abspath(name)
     for folder in model_folders():
         candidate = os.path.join(folder, name)
         if os.path.isfile(candidate):

@@ -25,7 +25,23 @@ Official repositories and exact filenames:
 | Hy-MT3-7B | `IQ2`, `Q4_K_M`, `Q8_0` | [tencent/Hy-MT3-7B-GGUF](https://huggingface.co/tencent/Hy-MT3-7B-GGUF) |
 | Hy-MT3-30B-A3B | `IQ2`, `Q4_K_M`, `Q8_0` | [tencent/Hy-MT3-30B-A3B-GGUF](https://huggingface.co/tencent/Hy-MT3-30B-A3B-GGUF) |
 
-The loader downloads the selected file automatically on first use (`auto_download` on). You can also place any `.gguf` under `ComfyUI/models/hy-mt3/` and select it in the dropdown, or pass an absolute path in `model_path`. Set `HF_ENDPOINT` to use a Hugging Face mirror.
+The loader downloads the selected file automatically on first use (`auto_download` on). Set `HF_ENDPOINT` to use a Hugging Face mirror.
+
+## Models stored elsewhere
+
+You are not limited to `ComfyUI/models/hy-mt3/`. Any of these work:
+
+- **Absolute path**: type it into the loader's `model_path` input; it overrides the dropdown. Relative paths that exist are also accepted.
+- **Extra directories**: set `HY_MT3_MODEL_PATHS` to one or more directories separated by `:` (`;` on Windows), e.g. `HY_MT3_MODEL_PATHS=/Models/LLM:/Volumes/SSD/gguf`. Every `.gguf` found there appears in the dropdown and is used without copying.
+- **ComfyUI `extra_model_paths.yaml`**: add a `hy-mt3` key and restart, e.g.
+  ```yaml
+  mymodels:
+    base_path: /path/to/model/library
+    hy-mt3: models/hy-mt3
+  ```
+- **Existing caches**: `~/.cache/llama.cpp` and Hugging Face snapshot folders for the official `tencent/Hy-MT3-*-GGUF` repos are scanned automatically.
+
+When a selected filename exists in several places, the first match in this order wins: ComfyUI registered `hy-mt3` paths, the default folder, `HY_MT3_MODEL_PATHS`, caches. Use `model_path` to force a specific file.
 
 ## Installation
 
@@ -40,7 +56,7 @@ Backend selection in the loader: `auto` (CLI first, then Python), `cli`, or `pyt
 
 ## Loader options
 
-- `model`: preset filename or a local `.gguf` discovered in `models/hy-mt3/`.
+- `model`: preset filename or a `.gguf` discovered in any configured model folder.
 - `device`: `auto` (llama.cpp decides), `gpu` (offload all layers), `cpu`.
 - `ctx_size`: default `8192`, the official context setting; range 512–262144.
 - `threads`: 0 = automatic.

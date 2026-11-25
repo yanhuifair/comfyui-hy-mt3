@@ -25,7 +25,23 @@
 | Hy-MT3-7B | `IQ2`、`Q4_K_M`、`Q8_0` | [tencent/Hy-MT3-7B-GGUF](https://huggingface.co/tencent/Hy-MT3-7B-GGUF) |
 | Hy-MT3-30B-A3B | `IQ2`、`Q4_K_M`、`Q8_0` | [tencent/Hy-MT3-30B-A3B-GGUF](https://huggingface.co/tencent/Hy-MT3-30B-A3B-GGUF) |
 
-首次运行会自动下载所选文件（`auto_download` 开启时）。也可以把任意 `.gguf` 放到 `ComfyUI/models/hy-mt3/` 后在下拉框中选择，或在 `model_path` 填绝对路径。可用 `HF_ENDPOINT` 指定镜像站。
+首次运行会自动下载所选文件（`auto_download` 开启时）。可用 `HF_ENDPOINT` 指定镜像站。
+
+## 使用放在其他位置的模型
+
+不要求一定放在 `ComfyUI/models/hy-mt3/`，以下方式都可以：
+
+- **绝对路径**：填到加载器的 `model_path` 输入，优先级高于下拉框；当前目录下存在的相对路径也可。
+- **额外目录**：设置环境变量 `HY_MT3_MODEL_PATHS`，多个目录用 `:` 分隔（Windows 用 `;`），例如 `HY_MT3_MODEL_PATHS=/Models/LLM:/Volumes/SSD/gguf`。其中的 `.gguf` 会出现在下拉框，无需复制文件。
+- **ComfyUI `extra_model_paths.yaml`**：增加 `hy-mt3` 键后重启，例如
+  ```yaml
+  mymodels:
+    base_path: /path/to/model/library
+    hy-mt3: models/hy-mt3
+  ```
+- **已有缓存**：`~/.cache/llama.cpp` 以及官方 `tencent/Hy-MT3-*-GGUF` 仓库的 Hugging Face 快照目录会自动扫描。
+
+同名文件存在于多处时，按以下顺序取第一个：ComfyUI 注册的 `hy-mt3` 路径、默认目录、`HY_MT3_MODEL_PATHS`、缓存。要强制指定某个文件请用 `model_path`。
 
 ## 安装
 
@@ -40,7 +56,7 @@
 
 ## 加载器参数
 
-- `model`：预设文件名，或在 `models/hy-mt3/` 中发现的本地 `.gguf`。
+- `model`：预设文件名，或在任意已配置模型目录中找到的 `.gguf`。
 - `device`：`auto`（由 llama.cpp 决定）、`gpu`（全部层卸载到显卡）、`cpu`。
 - `ctx_size`：默认 `8192`，与官方设置一致；范围 512–262144。
 - `threads`：0 表示自动。
