@@ -104,6 +104,17 @@ def _size_from_config(path: Path) -> str | None:
     return None
 
 
+def _local_size(source: str) -> str | None:
+    """Infer the model size of a local directory from its config.json."""
+    try:
+        path = Path(source)
+        if path.is_dir():
+            return _size_from_config(path)
+    except OSError:
+        return None
+    return None
+
+
 def local_model_choices() -> list[str]:
     """Return labels like ``7B @ /path/to/local/model`` for local snapshots."""
     labels: list[str] = []
@@ -137,7 +148,14 @@ def resolve_source(choice: str, model_path: str = "") -> str:
     override = model_path.strip()
     if override:
         expanded = os.path.expanduser(override)
-        return os.path.abspath(expanded) if os.path.isdir(expanded) else override
+        if os.path.isdir(expanded):
+            return os.path.abspath(expanded)
+        if os.path.exists(expanded):
+            raise ValueError(
+                f"model_path must be a model directory, got a file: {override}"
+            )
+        # Not a local path: treat as a Hugging Face repo id (e.g. org/name).
+        return override
     if " @ " in choice:
         return choice.split(" @ ", 1)[1]
     spec = spec_for_size(choice)
@@ -205,7 +223,12 @@ def load_model(
     dtype = dtype_map[dtype_name]
 
     spec = spec_for_repo(source) or spec_for_size(source)
-    size = spec.size if spec else "custom"
+    if spec is not None:
+        size = spec.size
+    else:
+        # Local folder: infer the size from config.json so the sampling
+        # defaults match the model family.
+        size = _local_size(source) or "custom"
 
     with _CACHE_LOCK:
         cached = _CACHE.get((source, dtype_name, device))
@@ -235,6 +258,8 @@ def load_model(
         with _CACHE_LOCK:
             _CACHE[(source, dtype_name, device)] = (tokenizer, model, actual_device)
 
+    # A fresh handle per call: the loader node may override sampling values,
+    # and a cached instance would leak those overrides into later runs.
     sampling = spec or spec_for_size(size)
     return HyMT3Model(
         source=source,
@@ -288,8 +313,12 @@ def generate(
         "temperature": handle.temperature,
         "top_p": handle.top_p,
         "repetition_penalty": handle.repeat_penalty,
-        "pad_token_id": handle.tokenizer.pad_token_id,
     }
+    pad_token_id = handle.tokenizer.pad_token_id
+    if pad_token_id is None:
+        pad_token_id = handle.tokenizer.eos_token_id
+    if pad_token_id is not None:
+        gen_kwargs["pad_token_id"] = pad_token_id
     if handle.top_k > 0:
         gen_kwargs["top_k"] = handle.top_k
     if progress:
@@ -297,6 +326,9 @@ def generate(
 
     with torch.inference_mode():
         outputs = handle.model.generate(**inputs, **gen_kwargs)
+    sequences = getattr(outputs, "sequences", outputs)
+    if hasattr(sequences, "dim") and sequences.dim() == 1:
+        sequences = sequences.unsqueeze(0)
     return handle.tokenizer.decode(
-        outputs[0][prompt_len:], skip_special_tokens=True
+        sequences[0][prompt_len:], skip_special_tokens=True
     ).strip()

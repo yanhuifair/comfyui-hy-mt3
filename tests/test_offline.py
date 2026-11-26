@@ -28,9 +28,11 @@ from hy_mt3_pkg.hy_mt3_backend import (  # noqa: E402
     MODEL_FOLDER,
     available_models,
     generate,
+    load_model,
     model_folders,
     resolve_source,
 )
+import hy_mt3_pkg.hy_mt3_backend as backend_mod  # noqa: E402
 from hy_mt3_pkg.hy_mt3_nodes import HyMT3ModelLoader, HyMT3Translate  # noqa: E402
 from hy_mt3_pkg.hy_mt3_prompt import (  # noqa: E402
     build_instruction,
@@ -84,6 +86,10 @@ class TestSourceResolution(unittest.TestCase):
         self.assertEqual(resolve_source("7B", "org/model"), "org/model")
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(resolve_source("7B", tmp), tmp)
+            file_path = Path(tmp) / "weights.safetensors"
+            file_path.write_text("stub", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                resolve_source("7B", str(file_path))
 
     def test_local_choice_label(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -150,6 +156,14 @@ class TestPrompts(unittest.TestCase):
     def test_clean_translation(self):
         self.assertEqual(
             clean_translation("<think>thinking</think>\nBonjour<answer></answer>"),
+            "Bonjour",
+        )
+        self.assertEqual(
+            clean_translation("Bonjour<｜hy_Assistant｜>"),
+            "Bonjour",
+        )
+        self.assertEqual(
+            clean_translation("Bonjour<|hy_Assistant|>"),
             "Bonjour",
         )
 
@@ -225,6 +239,91 @@ class TestGenerateWithFakeModel(unittest.TestCase):
                 sys.modules.pop("torch", None)
             else:
                 sys.modules["torch"] = old_torch
+
+
+class TestLoadModelCache(unittest.TestCase):
+    """load_model must return fresh handles even when the model is cached."""
+
+    def _fake_imports(self):
+        fake_torch = types.ModuleType("torch")
+        fake_torch.bfloat16 = "bf16"
+        fake_torch.float16 = "fp16"
+        fake_torch.float32 = "fp32"
+        fake_tf = types.ModuleType("transformers")
+        fake_tf.AutoModelForCausalLM = object()
+        fake_tf.AutoTokenizer = object()
+        return fake_torch, fake_tf
+
+    def test_fresh_handles_no_sampling_leak(self):
+        fake_torch, fake_tf = self._fake_imports()
+        old_torch, old_tf = sys.modules.get("torch"), sys.modules.get("transformers")
+        sys.modules["torch"] = fake_torch
+        sys.modules["transformers"] = fake_tf
+        prev = dict(backend_mod._CACHE)
+        fake_tok = FakeTokenizer()
+        fake_model = FakeModel()
+        try:
+            backend_mod._CACHE[("tencent/Hy-MT3-7B", "bf16", "auto")] = (
+                fake_tok,
+                fake_model,
+                "cpu",
+            )
+            h1 = load_model("tencent/Hy-MT3-7B", "bf16", "auto")
+            h1.temperature = 1.9  # custom override in the loader node
+            h1.top_p = 0.99
+            h2 = load_model("tencent/Hy-MT3-7B", "bf16", "auto")
+            self.assertIsNot(h1, h2)
+            self.assertEqual(h2.temperature, 0.7)
+            self.assertEqual(h2.top_p, 0.6)
+            self.assertEqual(h2.size, "7B")
+        finally:
+            backend_mod._CACHE.clear()
+            backend_mod._CACHE.update(prev)
+            if old_torch is None:
+                sys.modules.pop("torch", None)
+            else:
+                sys.modules["torch"] = old_torch
+            if old_tf is None:
+                sys.modules.pop("transformers", None)
+            else:
+                sys.modules["transformers"] = old_tf
+
+    def test_local_config_size_and_sampling(self):
+        fake_torch, fake_tf = self._fake_imports()
+        old_torch, old_tf = sys.modules.get("torch"), sys.modules.get("transformers")
+        sys.modules["torch"] = fake_torch
+        sys.modules["transformers"] = fake_tf
+        prev = dict(backend_mod._CACHE)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                folder = Path(tmp) / "local-30b"
+                folder.mkdir()
+                (folder / "config.json").write_text(
+                    json.dumps({"model_type": "hy_v3"}), encoding="utf-8"
+                )
+                fake_tok = FakeTokenizer()
+                fake_model = FakeModel()
+                backend_mod._CACHE[(str(folder), "bf16", "auto")] = (
+                    fake_tok,
+                    fake_model,
+                    "cpu",
+                )
+                handle = load_model(str(folder), "bf16", "auto")
+                self.assertEqual(handle.size, "30B-A3B")
+                self.assertEqual(handle.top_p, 1.0)
+                self.assertEqual(handle.top_k, -1)
+                self.assertEqual(handle.repeat_penalty, 1.0)
+        finally:
+            backend_mod._CACHE.clear()
+            backend_mod._CACHE.update(prev)
+            if old_torch is None:
+                sys.modules.pop("torch", None)
+            else:
+                sys.modules["torch"] = old_torch
+            if old_tf is None:
+                sys.modules.pop("transformers", None)
+            else:
+                sys.modules["transformers"] = old_tf
 
 
 if __name__ == "__main__":

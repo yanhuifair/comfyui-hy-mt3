@@ -12,15 +12,6 @@ from __future__ import annotations
 
 import re
 
-BOS = "<｜hy_begin▁of▁sentence｜>"
-USER = "<｜hy_User｜>"
-ASSISTANT = "<｜hy_Assistant｜>"
-
-
-def chat_prompt(message: str) -> str:
-    """Format a single user turn exactly like Hy-MT3's chat_template.jinja."""
-    return f"{BOS}{USER}{message}{ASSISTANT}"
-
 
 def prompt_language(text: str, preference: str) -> str:
     if preference == "zh":
@@ -128,8 +119,10 @@ def build_instruction(
 
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+# Hy-MT3 markers appear in fullwidth form (<｜hy_Assistant｜>); match both.
 _MARKERS = re.compile(
-    r"</?think>|</?answer>|<\|hy_Assistant\|>|<\|hy_end▁of▁sentence\|>", re.IGNORECASE
+    r"</?think>|</?answer>|<[|｜]hy_Assistant[|｜]>|<[|｜]hy_end▁of▁sentence[|｜]>",
+    re.IGNORECASE,
 )
 
 
